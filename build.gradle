@@ -1,0 +1,60 @@
+plugins {
+    // see https://fabricmc.net/develop/ for new versions
+    id 'net.fabricmc.fabric-loom' version '1.15.5' apply false
+    // see https://projects.neoforged.net/neoforged/moddevgradle for new versions
+    id 'net.neoforged.moddev' version '2.0.141' apply false
+    // see https://plugins.gradle.org/plugin/com.modrinth.minotaur for new versions
+    id 'com.modrinth.minotaur' version '2.9.0' apply false
+    // see https://plugins.gradle.org/plugin/net.darkhax.curseforgegradle for new versions
+    id 'net.darkhax.curseforgegradle' version '1.3.33' apply false
+}
+
+// Convenience aggregate task: publishes to Modrinth and CurseForge for all loaders.
+// Task paths are resolved lazily when the task graph is assembled, so this registration
+// is safe even when publishing IDs/tokens are not yet configured.
+tasks.register('publishAll') {
+    group = 'publishing'
+    description = 'Publishes all loader jars to Modrinth and CurseForge'
+    dependsOn(':fabric:modrinth', ':neoforge:modrinth', ':fabric:publishCurseForge', ':neoforge:publishCurseForge')
+}
+
+// EchoRenderer.java is intentionally duplicated verbatim between fabric and neoforge (the common
+// module has no client-side Minecraft dependencies to host a shared renderer). This task catches
+// the two copies drifting apart silently - wired into `check` so CI/local `./gradlew build` fails
+// loudly instead of one loader quietly falling behind the other's fixes.
+tasks.register('checkRendererParity') {
+    group = 'verification'
+    description = 'Fails if the fabric and neoforge copies of EchoRenderer.java differ'
+    def fabricRenderer = file('fabric/src/main/java/ua/eismont/deathechoes/client/EchoRenderer.java')
+    def neoforgeRenderer = file('neoforge/src/main/java/ua/eismont/deathechoes/client/EchoRenderer.java')
+    inputs.file(fabricRenderer)
+    inputs.file(neoforgeRenderer)
+    doLast {
+        if (!fabricRenderer.exists() || !neoforgeRenderer.exists()) {
+            throw new GradleException("checkRendererParity: expected both ${fabricRenderer} and ${neoforgeRenderer} to exist")
+        }
+        if (fabricRenderer.text != neoforgeRenderer.text) {
+            throw new GradleException(
+                "EchoRenderer.java has drifted between fabric and neoforge - they must stay byte-for-byte identical " +
+                "(fabric: ${fabricRenderer}, neoforge: ${neoforgeRenderer})"
+            )
+        }
+    }
+}
+
+// The root project has no `check`/`build` lifecycle of its own (no `base`/`java` plugin applied
+// here - only made available to subprojects via `apply false` above), so we can't just do
+// `tasks.named('check') { dependsOn(...) }` at the root: there is no root `check` task to find,
+// and adding the `base` plugin here to manufacture one would change how a bare `./gradlew build`
+// resolves (it currently works by CLI task-name matching across subprojects, precisely because
+// root has no same-named task of its own to shadow that). Instead, hook into fabric's and
+// neoforge's own (real) `check` tasks once all projects are configured, so `./gradlew build`/
+// `./gradlew check` from either subproject - or the aggregate CLI matching from root - still
+// picks this up without touching root's task graph.
+gradle.projectsEvaluated {
+    [':fabric', ':neoforge'].each { subprojectPath ->
+        project(subprojectPath).tasks.named('check').configure {
+            dependsOn(tasks.named('checkRendererParity'))
+        }
+    }
+}

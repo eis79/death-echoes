@@ -1,0 +1,107 @@
+plugins {
+    id 'multiloader-loader'
+    id 'net.fabricmc.fabric-loom'
+    id 'com.modrinth.minotaur'
+    id 'net.darkhax.curseforgegradle'
+}
+dependencies {
+    minecraft("com.mojang:minecraft:${minecraft_version}")
+    implementation("net.fabricmc:fabric-loader:${fabric_loader_version}")
+    implementation("net.fabricmc.fabric-api:fabric-api:${fabric_version}")
+}
+
+loom {
+    def aw = project(':common').file("src/main/resources/${mod_id}.accesswidener")
+    if (aw.exists()) {
+        accessWidenerPath.set(aw)
+    }
+    runs {
+        client {
+            client()
+            setConfigName('Fabric Client')
+            ideConfigGenerated(true)
+            runDir('runs/client')
+        }
+        server {
+            server()
+            setConfigName('Fabric Server')
+            ideConfigGenerated(true)
+            runDir('runs/server')
+        }
+        gametest {
+            server()
+            setConfigName('Game Test')
+            ideConfigGenerated(true)
+            vmArg('-Dfabric-api.gametest')
+            runDir('build/gametest')
+        }
+    }
+}
+
+// Implement mcgradleconventions loader attribute
+def loaderAttribute = Attribute.of('io.github.mcgradleconventions.loader', String)
+['apiElements', 'runtimeElements', 'sourcesElements', 'javadocElements', 'includeInternal', 'modCompileClasspath'].each { variant ->
+    configurations.named(variant) {
+        attributes {
+            attribute(loaderAttribute, 'fabric')
+        }
+    }
+}
+sourceSets.configureEach {
+    [it.compileClasspathConfigurationName, it.runtimeClasspathConfigurationName].each { variant->
+        configurations.named(variant) {
+            attributes {
+                attribute(loaderAttribute, 'fabric')
+            }
+        }
+    }
+}
+
+// Publishing: fill modrinth_project_id / curseforge_project_id in gradle.properties and
+// export MODRINTH_TOKEN / CURSEFORGE_TOKEN when ready to publish. Neither plugin validates
+// these at configuration time, so `./gradlew build` stays green while they are empty.
+// NOTE: this Loom version (1.15.5) does not create a separate 'remapJar' task for this
+// project's setup - the plain 'jar' task is the final artifact, same as on neoforge.
+// Verified via `./gradlew :fabric:tasks --all` (no remapJar in the task list).
+modrinth {
+    // Empty string is falsy in Groovy, so `?: ""` still yields "" (not null) when the
+    // property/env var is unset - safe for Minotaur, which only validates at task-run time.
+    token = System.getenv("MODRINTH_TOKEN") ?: ""
+    projectId = project.findProperty("modrinth_project_id") ?: ""
+    versionNumber = "${project.version}+${project.minecraft_version}-fabric"
+    versionType = "release"
+    uploadFile = tasks.named('jar')
+    gameVersions = [project.minecraft_version]
+    loaders = ["fabric"]
+    changelog = rootProject.file("CHANGELOG.md").text
+    // fabric.mod.json declares "fabric-api": "*" - mirror that here so Modrinth/CurseForge
+    // launchers auto-install it alongside this mod.
+    dependencies {
+        required.project "fabric-api"
+    }
+}
+
+tasks.named('modrinth') {
+    doFirst {
+        if (!project.findProperty('modrinth_project_id') || !System.getenv('MODRINTH_TOKEN')) {
+            throw new GradleException("Fill modrinth_project_id in gradle.properties and set MODRINTH_TOKEN env before publishing to Modrinth.")
+        }
+    }
+}
+
+tasks.register("publishCurseForge", net.darkhax.curseforgegradle.TaskPublishCurseForge) {
+    // Empty string is falsy in Groovy, so `?: ""` still yields "" (not null) when unset.
+    apiToken = System.getenv("CURSEFORGE_TOKEN") ?: ""
+    def mainFile = upload(project.findProperty("curseforge_project_id") ?: "0", tasks.named('jar'))
+    mainFile.addGameVersion(project.minecraft_version)
+    mainFile.addModLoader("Fabric")
+    mainFile.releaseType = "release"
+    mainFile.changelog = rootProject.file("CHANGELOG.md").text
+    // fabric.mod.json declares "fabric-api": "*" - mirror that here too.
+    mainFile.addRequirement("fabric-api")
+    doFirst {
+        if (!project.findProperty('curseforge_project_id') || !System.getenv('CURSEFORGE_TOKEN')) {
+            throw new GradleException("Fill curseforge_project_id in gradle.properties and set CURSEFORGE_TOKEN env before publishing to CurseForge.")
+        }
+    }
+}

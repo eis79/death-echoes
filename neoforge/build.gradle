@@ -1,0 +1,105 @@
+plugins {
+    id 'multiloader-loader'
+    id 'net.neoforged.moddev'
+    id 'com.modrinth.minotaur'
+    id 'net.darkhax.curseforgegradle'
+}
+
+neoForge {
+    version = neoforge_version
+    // Automatically enable neoforge AccessTransformers if the file exists
+    def at = project(':common').file('src/main/resources/META-INF/accesstransformer.cfg')
+    if (at.exists()) {
+        accessTransformers.from(at.absolutePath)
+    }
+    runs {
+        configureEach {
+            systemProperty('neoforge.enabledGameTestNamespaces', mod_id)
+            ideName = "NeoForge ${it.name.capitalize()} (${project.path})" // Unify the run config names with fabric
+        }
+        client {
+            client()
+            gameDirectory = this.mkdir(this.file('runs/client'))
+        }
+        data {
+            clientData()
+            gameDirectory = this.mkdir(this.file('runs/data'))
+            // DataGen can be run by - "./gradlew :neoforge:runData" in Terminal.
+            // Specify the modid for data generation, where to output the resulting resource, and where to look for existing resources.
+            programArguments.addAll '--mod', project.mod_id, '--all', '--output', file('src/generated/resources/').getAbsolutePath(), '--existing', file('src/main/resources/').getAbsolutePath()
+        }
+        server {
+            server()
+            this.file('runs/server').createParentDirectories()
+            gameDirectory = this.mkdir(this.file('runs/server'))
+        }
+    }
+    mods {
+        "${mod_id}" {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+// Implement mcgradleconventions loader attribute
+def loaderAttribute = Attribute.of('io.github.mcgradleconventions.loader', String)
+['apiElements', 'runtimeElements', 'sourcesElements', 'javadocElements'].each { variant ->
+    configurations.named(variant) {
+        attributes {
+            attribute(loaderAttribute, 'neoforge')
+        }
+    }
+}
+sourceSets.configureEach {
+    [it.compileClasspathConfigurationName, it.runtimeClasspathConfigurationName, it.getTaskName(null, 'jarJar')].each { variant ->
+        configurations.named(variant) {
+            attributes {
+                attribute(loaderAttribute, 'neoforge')
+            }
+        }
+    }
+}
+
+// Publishing: fill modrinth_project_id / curseforge_project_id in gradle.properties and
+// export MODRINTH_TOKEN / CURSEFORGE_TOKEN when ready to publish. Neither plugin validates
+// these at configuration time, so `./gradlew build` stays green while they are empty.
+// ModDevGradle does not remap jars (NeoForge runs against Mojang mappings directly), so the
+// plain 'jar' task produces the final artifact here - same as on fabric in this setup
+// (verified via `./gradlew :fabric:tasks --all`: no separate remapJar task exists).
+modrinth {
+    // Empty string is falsy in Groovy, so `?: ""` still yields "" (not null) when the
+    // property/env var is unset - safe for Minotaur, which only validates at task-run time.
+    token = System.getenv("MODRINTH_TOKEN") ?: ""
+    projectId = project.findProperty("modrinth_project_id") ?: ""
+    versionNumber = "${project.version}+${project.minecraft_version}-neoforge"
+    versionType = "release"
+    uploadFile = tasks.named('jar')
+    gameVersions = [project.minecraft_version]
+    loaders = ["neoforge"]
+    changelog = rootProject.file("CHANGELOG.md").text
+}
+
+tasks.named('modrinth') {
+    doFirst {
+        if (!project.findProperty('modrinth_project_id') || !System.getenv('MODRINTH_TOKEN')) {
+            throw new GradleException("Fill modrinth_project_id in gradle.properties and set MODRINTH_TOKEN env before publishing to Modrinth.")
+        }
+    }
+}
+
+tasks.register("publishCurseForge", net.darkhax.curseforgegradle.TaskPublishCurseForge) {
+    // Empty string is falsy in Groovy, so `?: ""` still yields "" (not null) when unset.
+    apiToken = System.getenv("CURSEFORGE_TOKEN") ?: ""
+    def mainFile = upload(project.findProperty("curseforge_project_id") ?: "0", tasks.named('jar'))
+    mainFile.addGameVersion(project.minecraft_version)
+    mainFile.addModLoader("NeoForge")
+    mainFile.releaseType = "release"
+    mainFile.changelog = rootProject.file("CHANGELOG.md").text
+    doFirst {
+        if (!project.findProperty('curseforge_project_id') || !System.getenv('CURSEFORGE_TOKEN')) {
+            throw new GradleException("Fill curseforge_project_id in gradle.properties and set CURSEFORGE_TOKEN env before publishing to CurseForge.")
+        }
+    }
+}
